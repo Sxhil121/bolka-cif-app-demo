@@ -3,7 +3,7 @@
 /**
  * The CIF-facing page.
  *
- * Two things happen in this file, and they are kept deliberately separate:
+ * Two things happen in this file:
  *
  *   1. REAL Dynamics 365 Channel Integration Framework (CIF) 1.0 wiring:
  *      detecting/loading the ucilib script, listening for CIFInitDone,
@@ -11,10 +11,15 @@
  *      Microsoft.CIFramework.addHandler. This part talks to genuine
  *      Microsoft APIs, per the official docs (see README.md References).
  *
- *   2. SIMULATED call lifecycle: ringing -> connected -> ended -> wrap-up.
- *      Nothing in this part calls any real telephony backend or writes to
- *      Dataverse. Every place a real integration would eventually plug in
- *      is marked with "// TODO: real integration — ...".
+ *   2. REAL telephony via Tata Smartflo's Click-to-Call API, proxied
+ *      through the server route at app/api/click-to-call/route.js (so
+ *      Tata credentials never reach the browser). This dials your own
+ *      "from" number first, then bridges to the "to" number once you
+ *      pick up — see README.md for details.
+ *
+ *      What's still NOT real: writing the resulting call activity back
+ *      into Dataverse. That remains a "// TODO: real integration — ..."
+ *      marker, same as before.
  */
 
 import { useEffect, useRef, useState } from "react";
@@ -39,9 +44,15 @@ const STATUS_LABEL = {
 
 const CALL_STATE = {
   IDLE: "idle",
-  RINGING: "ringing",
-  CONNECTED: "connected",
+  RINGING: "ringing", // waiting on the Tata click_to_call API to accept the request
+  CONNECTED: "connected", // Tata accepted the request; a real call is presumed in progress
   ENDED: "ended",
+};
+
+const CALL_STATE_LABEL = {
+  [CALL_STATE.RINGING]: "originating…",
+  [CALL_STATE.CONNECTED]: "in progress",
+  [CALL_STATE.ENDED]: "ended",
 };
 
 function formatTimer(totalSeconds) {
@@ -62,6 +73,7 @@ export default function DialpadClient() {
   const [callMeta, setCallMeta] = useState(null);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [loggedCalls, setLoggedCalls] = useState([]);
+  const [fromNumber, setFromNumber] = useState("");
   const [dialValue, setDialValue] = useState("");
   const [disposition, setDisposition] = useState("Connected - Resolved");
   const [notes, setNotes] = useState("");
@@ -73,7 +85,6 @@ export default function DialpadClient() {
   const callMetaRef = useRef(null);
   const elapsedRef = useRef(0);
   const readyTimerRef = useRef(null);
-  const ringingTimerRef = useRef(null);
   const tickTimerRef = useRef(null);
   const eventLogRef = useRef(null);
 
@@ -128,7 +139,7 @@ export default function DialpadClient() {
       //   { value, name, format, entityLogicalName }
       window.Microsoft.CIFramework.addHandler("onclicktoact", function (eventData) {
         logEvent("cif", "onclicktoact received", eventData);
-        startSimulatedCall({
+        originateRealCall({
           value: eventData && eventData.value,
           name: (eventData && eventData.name) || "unknown",
           format: (eventData && eventData.format) || "phone",
@@ -219,19 +230,41 @@ export default function DialpadClient() {
   }, []);
 
   // ================================================================
-  // PART 2 — SIMULATED call lifecycle (no real telephony, ever)
+  // PART 2 — REAL telephony via Tata Smartflo Click-to-Call
   // ================================================================
 
-  function startSimulatedCall(eventData) {
+  async function originateRealCall(eventData) {
     if (callStateRef.current !== CALL_STATE.IDLE) {
       logEvent("system", "Ignored new call — one is already in progress");
       return;
     }
 
+    const from = fromNumber.trim();
+    const to = (eventData.value || "").trim();
+
+    if (!from) {
+      logEvent("error", "Cannot place call — set your agent/from number first");
+      return;
+    }
+    if (!to) {
+      logEvent("error", "Cannot place call — no destination number");
+      return;
+    }
+
+    const confirmed = window.confirm(
+      `Place a real call from ${from} to ${to} via Tata Smartflo? This dials a real phone and may incur charges.`
+    );
+    if (!confirmed) {
+      logEvent("system", "Call cancelled before dialing");
+      return;
+    }
+
+    setDialValue("");
     callSeq += 1;
     const meta = {
-      id: `sim-${Date.now()}-${callSeq}`,
-      value: eventData.value,
+      id: `call-${Date.now()}-${callSeq}`,
+      value: to,
+      fromNumber: from,
       name: eventData.name,
       format: eventData.format,
       entityLogicalName: eventData.entityLogicalName,
@@ -246,22 +279,40 @@ export default function DialpadClient() {
     setCallState(CALL_STATE.RINGING);
     setElapsedSeconds(0);
 
-    logEvent("call", "Simulated call: ringing", meta);
+    logEvent("call", "Originating real call via Tata Smartflo click_to_call", {
+      fromNumber: from,
+      toNumber: to,
+    });
 
-    // TODO: real integration — this is where a real Bolka backend call
-    // would originate the call, e.g. POST /calls/originate with the
-    // number/entity context. Here we just fake a short ring delay.
-    const ringDelay = 1000 + Math.random() * 500; // ~1.0-1.5s
-    ringingTimerRef.current = setTimeout(function () {
+    try {
+      const res = await fetch("/api/click-to-call", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ fromNumber: from, toNumber: to }),
+      });
+      const data = await res.json();
+
+      // The user may have hit "End call" while this request was in flight.
       if (callStateRef.current !== CALL_STATE.RINGING) return;
+
+      if (!res.ok || data.success === false) {
+        logEvent("error", "Tata click-to-call failed", data);
+        resetToIdle();
+        return;
+      }
+
+      logEvent("call", "Tata click-to-call accepted — call presumed in progress", data);
       transitionToConnected();
-    }, ringDelay);
+    } catch (err) {
+      if (callStateRef.current !== CALL_STATE.RINGING) return;
+      logEvent("error", "Network error calling /api/click-to-call", { message: err.message });
+      resetToIdle();
+    }
   }
 
   function transitionToConnected() {
     callStateRef.current = CALL_STATE.CONNECTED;
     setCallState(CALL_STATE.CONNECTED);
-    logEvent("call", "Simulated call: connected", { id: callMetaRef.current.id });
 
     tickTimerRef.current = setInterval(function () {
       elapsedRef.current += 1;
@@ -272,10 +323,6 @@ export default function DialpadClient() {
   function endCall() {
     if (callStateRef.current === CALL_STATE.IDLE) return;
 
-    if (ringingTimerRef.current) {
-      clearTimeout(ringingTimerRef.current);
-      ringingTimerRef.current = null;
-    }
     if (tickTimerRef.current) {
       clearInterval(tickTimerRef.current);
       tickTimerRef.current = null;
@@ -285,7 +332,7 @@ export default function DialpadClient() {
     callStateRef.current = CALL_STATE.ENDED;
     setCallState(CALL_STATE.ENDED);
 
-    logEvent("call", "Simulated call: ended", {
+    logEvent("call", "Call marked ended locally", {
       id: callMetaRef.current.id,
       durationSeconds: wasConnected ? elapsedRef.current : 0,
     });
@@ -331,27 +378,33 @@ export default function DialpadClient() {
   }
 
   function handleSimulateClick() {
-    // Fabricated eventData in the exact shape Dynamics sends to onclicktoact.
+    // Fabricates the onclicktoact-shaped eventData Dynamics would send, but
+    // dials whatever number is currently typed into the "To" field below —
+    // never a hardcoded number, since this now places a real call.
+    const number = dialValue.trim();
+    if (!number) {
+      logEvent("error", "Type a number into the To field first, then simulate");
+      return;
+    }
     const fakeEventData = {
-      value: "9833165547",
+      value: number,
       name: "mobilephone",
       format: "phone",
       entityLogicalName: "contact",
     };
     logEvent("system", "Simulate button clicked — fabricating onclicktoact-shaped eventData", fakeEventData);
-    startSimulatedCall(fakeEventData);
+    originateRealCall(fakeEventData);
   }
 
   function handleDial() {
     const number = dialValue.trim();
     if (!number) return;
-    startSimulatedCall({
+    originateRealCall({
       value: number,
       name: "manual_dial",
       format: "phone",
       entityLogicalName: "manual",
     });
-    setDialValue("");
   }
 
   const idleMessage =
@@ -400,13 +453,26 @@ export default function DialpadClient() {
           <div>
             <div className={styles.callState}>{idleMessage}</div>
 
+            <label htmlFor="fromInput">Your number (agent/from)</label>
+            <input
+              id="fromInput"
+              type="text"
+              value={fromNumber}
+              onChange={(e) => setFromNumber(e.target.value)}
+              placeholder="e.g. 9198xxxxxxx"
+            />
+            <div className={styles.hint}>
+              Tata rings this number first, then bridges you to the
+              destination once you pick up. Set it once before dialing.
+            </div>
+
             {status === STATUS.STANDALONE && (
               <button className="block" onClick={handleSimulateClick}>
-                Simulate incoming click-to-call
+                Simulate incoming click-to-call (real dial)
               </button>
             )}
 
-            <label htmlFor="dialInput">Manual dial (test any number)</label>
+            <label htmlFor="dialInput">Destination number</label>
             <div className={styles.row}>
               <input
                 id="dialInput"
@@ -421,8 +487,8 @@ export default function DialpadClient() {
               </button>
             </div>
             <div className={styles.hint}>
-              Manual dial always works, live or standalone — it builds the
-              same eventData shape Dynamics would send from onclicktoact.
+              This places a real call via Tata Smartflo click_to_call — it
+              rings a real phone and may incur charges.
             </div>
           </div>
         )}
@@ -431,7 +497,7 @@ export default function DialpadClient() {
           <div>
             <div className={styles.callActive}>
               <div>
-                <span className={`${styles.badge} ${badgeClass}`}>{callState}</span>
+                <span className={`${styles.badge} ${badgeClass}`}>{CALL_STATE_LABEL[callState]}</span>
                 <div className={styles.callState} style={{ margin: "6px 0 0" }}>
                   <span className={styles.num}>{(callMeta && callMeta.value) || "—"}</span>
                 </div>
@@ -440,9 +506,15 @@ export default function DialpadClient() {
             </div>
 
             {callState !== CALL_STATE.ENDED && (
-              <button className="block danger" onClick={endCall}>
-                End call
-              </button>
+              <>
+                <button className="block danger" onClick={endCall}>
+                  End call
+                </button>
+                <div className={styles.hint}>
+                  This only updates the UI and starts wrap-up — it does not
+                  hang up the real phones. Hang up on your own handset when done.
+                </div>
+              </>
             )}
 
             {callState === CALL_STATE.ENDED && (

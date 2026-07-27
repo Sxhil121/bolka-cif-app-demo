@@ -3,9 +3,10 @@
 A real Next.js app for testing the Dynamics 365 Channel Integration
 Framework (CIF) click-to-call flow the way a real embedded app actually
 behaves — real routing, real page loads, a real login page — rather than a
-single flat HTML file. It's still just a **test harness**: no real
-authentication, no real telephony backend, no real Dataverse writes. Only
-the parts that talk to Dynamics 365 via the CIF JavaScript API are real.
+single flat HTML file. It's still a **test harness**: no real
+authentication and no real Dataverse writes. However, outbound calling is
+now **real**, via Tata Smartflo's Click-to-Call API — clicking to call
+places an actual phone call.
 
 This is a sibling project to the earlier static demo,
 [`bolka-cif-demo`](https://github.com/Sxhil121/bolka-cif-demo) — that one
@@ -19,10 +20,9 @@ and a dedicated dialpad route.
   integration with Microsoft's CIF JavaScript API (`CIFInitDone`,
   `Microsoft.CIFramework.addHandler`).
 - **Isn't**: a production app. There is no real authentication (the login
-  form just checks both fields are non-empty), no real telephony backend,
-  and no real Dataverse writes. Every place a real integration would plug
-  in is marked `// TODO: real integration — ...` in
-  `app/dialpad/DialpadClient.js`.
+  form just checks both fields are non-empty) and no real Dataverse
+  writes. The remaining seam is marked `// TODO: real integration — ...`
+  in `app/dialpad/DialpadClient.js`.
 
 ## Running it locally
 
@@ -41,12 +41,52 @@ inside a Dynamics CIF panel and drops into **standalone preview mode**:
 - The status dot turns blue and reads "Standalone preview".
 - A **"Simulate incoming click-to-call"** button appears, fabricating an
   `onclicktoact`-shaped payload (`{ value, name, format,
-  entityLogicalName }`) so the full call lifecycle — ringing → connected →
-  end call → wrap-up → logged call — can be exercised with zero Dynamics
-  connection.
+  entityLogicalName }`) around whatever number is in the destination
+  field, so the trigger path can be tested without Dynamics — but it
+  places a **real call**, same as manual dial.
 - The manual dial box works the same way in every mode.
 - The event log panel shows every event, real or simulated, timestamped
   and pretty-printed.
+
+## Setting up real click-to-call (Tata Smartflo)
+
+`app/api/click-to-call/route.js` is a server-only Next.js Route Handler
+that calls Tata Smartflo's Click-to-Call API. It's server-only on purpose:
+your Tata login credentials must never reach the browser bundle. The
+client only ever sends `{ fromNumber, toNumber }` to this route; the route
+holds your credentials as environment variables and does the rest.
+
+**How the call actually works**: Tata rings your own `fromNumber`
+(`agent_number`) first; once you pick up, Tata bridges you to the
+`toNumber` (`destination_number`). It is not an in-browser/WebRTC call —
+your own phone rings.
+
+1. Copy `.env.local.example` to `.env.local` and fill in:
+   - `TATA_EMAIL` — your Tata Smartflo login email
+   - `TATA_PASSWORD` — your Tata Smartflo login password
+   - `TATA_CALLER_ID` — the caller ID (assigned/pilot number) your account
+     should present to the destination number
+2. For the deployed app, set the same three variables in Vercel:
+   **Project → Settings → Environment Variables** (or `vercel env add
+   TATA_EMAIL`, etc., run from your own terminal so the value is typed
+   directly into the CLI prompt and never stored in a chat log or a file).
+3. Restart `npm run dev` (or redeploy) after setting them.
+
+**What happens under the hood on each call** (see
+`app/api/click-to-call/route.js`):
+1. `POST https://api-smartflo.tatateleservices.com/v1/auth/login` with
+   `{ email, password }` → returns a bearer `access_token` (valid ~1 hour;
+   this demo fetches a fresh one on every call rather than caching it, see
+   the `// TODO: real integration` note in that file for the optimization).
+2. `POST https://api-smartflo.tatateleservices.com/v1/click_to_call` with
+   `Authorization: Bearer <access_token>` and
+   `{ agent_number, destination_number, caller_id, async: 1, call_timeout }`.
+
+**Safety note**: this dials real phones and may incur real charges. The
+dialpad shows a confirmation dialog before every call, and "End call" only
+updates the local UI — it does not hang up the real phone call (Tata's
+Click-to-Call API is fire-and-forget; there's no documented cancel
+endpoint), so hang up on your own handset when you're done.
 
 ## Deployed URLs
 
@@ -100,15 +140,15 @@ integration) is already configured there.
 | Detecting `ucilib` param, injecting the CIF library `<script>` | **Real** | Reads via `useSearchParams` in `app/dialpad/DialpadClient.js`, injects the script Dynamics tells it to load |
 | `CIFInitDone` event | **Real** | Genuine Microsoft readiness event; nothing else is called before it fires |
 | `Microsoft.CIFramework.addHandler("onclicktoact", ...)` | **Real** | Registers a real handler; the raw `eventData` Dynamics sends is logged verbatim |
-| `onclicktoact` → simulated call trigger | **Real event, simulated response** | The trigger is real; everything after is fake |
-| Ringing → connected → timer → end call | **Simulated** | No telephony backend, no network calls, purely local state/timers |
+| `onclicktoact` → call trigger | **Real** | The trigger is real, and it now places a real call |
+| Originating the call (Tata Smartflo `click_to_call`) | **Real** | Server-side route in `app/api/click-to-call/route.js`; a real phone rings |
+| "In progress" timer, "End call" | **Local UI only** | The timer is just a local clock; "End call" does not hang up the real phone — Tata's API is fire-and-forget with no cancel endpoint |
 | Wrap-up (disposition + notes) → "Log call activity" | **Simulated** | Appends to an in-memory array only; a page reload wipes it |
 | `createRecord`/`retrieveRecord`/`updateRecord`/`deleteRecord`, `getEnvironment`, `setWidth`/`getWidth`, `setMode`/`getMode`, `searchAndOpenRecords`, `openForm`, `renderSearchPage`, `removeHandler`, `raiseEvent`, `updateContext` | **Referenced only** | Listed/commented in `DialpadClient.js` for future use; none are invoked |
-| Any Bolka backend call (e.g. `POST /calls/originate`) | **Not implemented** | Every seam is marked `// TODO: real integration — ...` |
+| Writing the call activity back into Dataverse | **Not implemented** | Marked `// TODO: real integration — ...` in `DialpadClient.js` |
 
 Search `app/dialpad/DialpadClient.js` for `TODO: real integration` to find
-every place real telephony or a real Dataverse write would eventually
-replace the simulation.
+the one remaining seam — writing the logged call activity into Dataverse.
 
 ## Reference documentation
 
@@ -126,3 +166,8 @@ official Microsoft Learn pages:
 - `Microsoft.CIFramework.addHandler` reference: https://learn.microsoft.com/en-us/dynamics365/channel-integration-framework/v1/develop/reference/microsoft-ciframework/addhandler
 - `Microsoft.CIFramework` full method index (also the 10-second timeout note): https://learn.microsoft.com/en-us/dynamics365/channel-integration-framework/v1/develop/reference/microsoft-ciframework
 - Choosing between CIF 1.0 and 2.0: https://learn.microsoft.com/en-us/dynamics365/channel-integration-framework/choose-between-versions
+
+Tata Smartflo Click-to-Call API:
+
+- Generate a token (login): https://docs.smartflo.tatatelebusiness.com/reference/generate-a-token
+- Click to Call: https://docs.smartflo.tatatelebusiness.com/reference/v1click_to_call
