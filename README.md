@@ -50,8 +50,8 @@ inside a Dynamics CIF panel and drops into **standalone preview mode**:
 
 ## Deployed URLs
 
-- GitHub repo: `<TBD — filled in after push>`
-- Live app (Vercel): `<TBD — filled in after deploy>`
+- GitHub repo: https://github.com/Sxhil121/bolka-cif-app-demo
+- Live app (Vercel): https://bolka-cif-app-demo.vercel.app
 
 ## Registering this as a Channel Provider in Dynamics 365
 
@@ -64,15 +64,14 @@ Same CIF 1.0 admin flow as any custom provider:
    provider.
 3. Fill in:
    - **Name** / **Label** — e.g. `Bolka Demo`
-   - **Channel URL** — your deployed app's `/dialpad` route with `ucilib`
+   - **Channel URL** — the deployed `/dialpad` route with `ucilib`
      appended, e.g.
-     `<vercel-url>/dialpad?ucilib=https://<org>.crm.dynamics.com/webresources/Widget/msdyn_ciLibrary.js`
+     `https://bolka-cif-app-demo.vercel.app/dialpad?ucilib=https://<org>.crm.dynamics.com/webresources/Widget/msdyn_ciLibrary.js`
    - **Enable Outbound Communication** = `Yes`
    - **Channel Order** — e.g. `1`, or higher than an existing provider if
      testing alongside one
    - **API Version** = `1.0`
-   - **Trusted Domain** — the Vercel app's domain (e.g.
-     `<app-name>.vercel.app`)
+   - **Trusted Domain** — `bolka-cif-app-demo.vercel.app`
    - **Unified Interface Apps** — Sales Hub / Customer Service Hub, as
      applicable
    - **Security roles** — whichever roles should see the provider
