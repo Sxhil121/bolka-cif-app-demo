@@ -1,47 +1,24 @@
 /**
- * Server-side Tata Smartflo Click-to-Call integration.
+ * Server-side Tata Smartflo Click-to-Call Support integration.
  *
- * This runs only on the server (Next.js Route Handler) so the Tata
- * account credentials never reach the browser bundle. The client posts
- * only { fromNumber, toNumber } here; everything else (login, token,
- * caller ID) is server-held configuration.
+ * This runs only on the server (Next.js Route Handler) so the Tata API
+ * key never reaches the browser bundle. The client posts only
+ * { toNumber } here; the destination agent leg (Sandeep's Smartflo
+ * *extension*, not his mobile) is baked into TATA_CTC_SUPPORT_API_KEY
+ * itself, configured in the Smartflo dashboard under
+ * API Connect -> Click to Call Support API.
  *
- * Reference docs:
- * - Generate a token:  https://docs.smartflo.tatatelebusiness.com/reference/generate-a-token
- * - Click to Call:     https://docs.smartflo.tatatelebusiness.com/reference/v1click_to_call
+ * Unlike the plain click_to_call API (which only rings an agent's
+ * mobile/follow_me_number), click_to_call_support's api_key can target
+ * either a Mobile or an Extension as its destination — this key was
+ * generated with "Assigned To: Sandeep (Extension)".
+ *
+ * Reference: https://docs.smartflo.tatatelebusiness.com/reference/v1click_to_call_support
  */
 
 import { NextResponse } from "next/server";
 
 const TATA_BASE_URL = "https://api-smartflo.tatateleservices.com/v1";
-
-// TODO: real integration (optimization) — a fresh token is fetched on
-// every call for simplicity. The login response includes expires_in
-// (3600s); a higher-volume deployment should cache the access_token in
-// memory/KV for its lifetime instead of logging in on every request.
-async function getAccessToken() {
-  const email = process.env.TATA_EMAIL;
-  const password = process.env.TATA_PASSWORD;
-
-  if (!email || !password) {
-    throw new Error("Server is missing TATA_EMAIL / TATA_PASSWORD configuration");
-  }
-
-  const res = await fetch(`${TATA_BASE_URL}/auth/login`, {
-    method: "POST",
-    headers: {
-      Accept: "application/json",
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ email, password }),
-  });
-
-  const data = await res.json();
-  if (!res.ok || !data.access_token) {
-    throw new Error(data.message || "Tata login failed");
-  }
-  return data.access_token;
-}
 
 export async function POST(request) {
   let body;
@@ -51,38 +28,29 @@ export async function POST(request) {
     return NextResponse.json({ success: false, message: "Invalid JSON body" }, { status: 400 });
   }
 
-  const fromNumber = body && body.fromNumber;
   const toNumber = body && body.toNumber;
-
-  if (!fromNumber || !toNumber) {
-    return NextResponse.json(
-      { success: false, message: "fromNumber and toNumber are both required" },
-      { status: 400 }
-    );
+  if (!toNumber) {
+    return NextResponse.json({ success: false, message: "toNumber is required" }, { status: 400 });
   }
 
-  const callerId = process.env.TATA_CALLER_ID;
-  if (!callerId) {
+  const apiKey = process.env.TATA_CTC_SUPPORT_API_KEY;
+  if (!apiKey) {
     return NextResponse.json(
-      { success: false, message: "Server is missing TATA_CALLER_ID configuration" },
+      { success: false, message: "Server is missing TATA_CTC_SUPPORT_API_KEY configuration" },
       { status: 500 }
     );
   }
 
   try {
-    const accessToken = await getAccessToken();
-
-    const res = await fetch(`${TATA_BASE_URL}/click_to_call`, {
+    const res = await fetch(`${TATA_BASE_URL}/click_to_call_support`, {
       method: "POST",
       headers: {
         Accept: "application/json",
         "Content-Type": "application/json",
-        Authorization: `Bearer ${accessToken}`,
       },
       body: JSON.stringify({
-        agent_number: fromNumber,
-        destination_number: toNumber,
-        caller_id: callerId,
+        customer_number: toNumber,
+        api_key: apiKey,
         async: 1,
         call_timeout: 60,
       }),

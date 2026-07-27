@@ -51,42 +51,60 @@ inside a Dynamics CIF panel and drops into **standalone preview mode**:
 ## Setting up real click-to-call (Tata Smartflo)
 
 `app/api/click-to-call/route.js` is a server-only Next.js Route Handler
-that calls Tata Smartflo's Click-to-Call API. It's server-only on purpose:
-your Tata login credentials must never reach the browser bundle. The
-client only ever sends `{ fromNumber, toNumber }` to this route; the route
-holds your credentials as environment variables and does the rest.
+that calls Tata Smartflo's **Click to Call Support** API. It's server-only
+on purpose: the Tata API key must never reach the browser bundle. The
+client only ever sends `{ toNumber }` to this route; the route holds the
+API key as a server-side environment variable and does the rest.
 
-**How the call actually works**: Tata rings your own `fromNumber`
-(`agent_number`) first; once you pick up, Tata bridges you to the
-`toNumber` (`destination_number`). It is not an in-browser/WebRTC call —
-your own phone rings.
+**Why this specific API, not the plain Click to Call API**: Tata actually
+has two different click-to-call endpoints, and they behave differently:
+
+- `POST /v1/click_to_call` (email/password login → bearer token,
+  `agent_number` + `destination_number`) — but `agent_number` must be the
+  agent's **mobile number** (their `follow_me_number`). It cannot target a
+  Smartflo **extension**/softphone — Tata rejects any other value with
+  `"This agent_number doesn't belong to your associated agent."`
+- `POST /v1/click_to_call_support` (a static `api_key` + `customer_number`,
+  no login needed) — the destination agent leg (Mobile **or** Extension) is
+  baked into the `api_key` itself when it's generated in the Smartflo
+  dashboard. This is the one this app uses, because it's what lets the call
+  ring an agent's **extension/softphone** instead of their mobile.
+
+**How the call actually works**: Tata rings the agent leg configured
+behind the API key first (in this app's case, a specific Smartflo
+extension); once someone picks up, Tata bridges the call to `toNumber`
+(`customer_number`). It is not an in-browser/WebRTC call — a real phone or
+softphone rings.
+
+**To get the API key**: in the Smartflo admin dashboard, go to
+**API Connect → Click to Call Support API**, and either use an existing
+enabled key or **Generate API Key**, choosing the **Extension** (not
+Mobile) as the destination type for the agent you want calls to ring.
 
 1. Copy `.env.local.example` to `.env.local` and fill in:
-   - `TATA_EMAIL` — your Tata Smartflo login email
-   - `TATA_PASSWORD` — your Tata Smartflo login password
-   - `TATA_CALLER_ID` — the caller ID (assigned/pilot number) your account
-     should present to the destination number
-2. For the deployed app, set the same three variables in Vercel:
+   - `TATA_CTC_SUPPORT_API_KEY` — the key from the dashboard above
+   - `TATA_EMAIL` / `TATA_PASSWORD` / `TATA_CALLER_ID` — not used by the
+     current calling code path, kept for reference / possible future use
+     of other Tata APIs
+2. For the deployed app, set the same variables in Vercel:
    **Project → Settings → Environment Variables** (or `vercel env add
-   TATA_EMAIL`, etc., run from your own terminal so the value is typed
-   directly into the CLI prompt and never stored in a chat log or a file).
+   TATA_CTC_SUPPORT_API_KEY`, etc., run from your own terminal so the
+   value is typed directly into the CLI prompt and never stored in a chat
+   log or a file).
 3. Restart `npm run dev` (or redeploy) after setting them.
 
 **What happens under the hood on each call** (see
 `app/api/click-to-call/route.js`):
-1. `POST https://api-smartflo.tatateleservices.com/v1/auth/login` with
-   `{ email, password }` → returns a bearer `access_token` (valid ~1 hour;
-   this demo fetches a fresh one on every call rather than caching it, see
-   the `// TODO: real integration` note in that file for the optimization).
-2. `POST https://api-smartflo.tatateleservices.com/v1/click_to_call` with
-   `Authorization: Bearer <access_token>` and
-   `{ agent_number, destination_number, caller_id, async: 1, call_timeout }`.
+```
+POST https://api-smartflo.tatateleservices.com/v1/click_to_call_support
+{ customer_number, api_key, async: 1, call_timeout }
+```
 
 **Safety note**: this dials real phones and may incur real charges. The
 dialpad shows a confirmation dialog before every call, and "End call" only
-updates the local UI — it does not hang up the real phone call (Tata's
-Click-to-Call API is fire-and-forget; there's no documented cancel
-endpoint), so hang up on your own handset when you're done.
+updates the local UI — it does not hang up the real call (Tata's
+Click-to-Call Support API is fire-and-forget; there's no documented cancel
+endpoint), so hang up on your own handset/softphone when you're done.
 
 ## Deployed URLs
 
@@ -141,8 +159,8 @@ integration) is already configured there.
 | `CIFInitDone` event | **Real** | Genuine Microsoft readiness event; nothing else is called before it fires |
 | `Microsoft.CIFramework.addHandler("onclicktoact", ...)` | **Real** | Registers a real handler; the raw `eventData` Dynamics sends is logged verbatim |
 | `onclicktoact` → call trigger | **Real** | The trigger is real, and it now places a real call |
-| Originating the call (Tata Smartflo `click_to_call`) | **Real** | Server-side route in `app/api/click-to-call/route.js`; a real phone rings |
-| "In progress" timer, "End call" | **Local UI only** | The timer is just a local clock; "End call" does not hang up the real phone — Tata's API is fire-and-forget with no cancel endpoint |
+| Originating the call (Tata Smartflo `click_to_call_support`) | **Real** | Server-side route in `app/api/click-to-call/route.js`; rings a real Smartflo extension, then bridges to the destination |
+| "In progress" timer, "End call" | **Local UI only** | The timer is just a local clock; "End call" does not hang up the real call — Tata's API is fire-and-forget with no cancel endpoint |
 | Wrap-up (disposition + notes) → "Log call activity" | **Simulated** | Appends to an in-memory array only; a page reload wipes it |
 | `createRecord`/`retrieveRecord`/`updateRecord`/`deleteRecord`, `getEnvironment`, `setWidth`/`getWidth`, `setMode`/`getMode`, `searchAndOpenRecords`, `openForm`, `renderSearchPage`, `removeHandler`, `raiseEvent`, `updateContext` | **Referenced only** | Listed/commented in `DialpadClient.js` for future use; none are invoked |
 | Writing the call activity back into Dataverse | **Not implemented** | Marked `// TODO: real integration — ...` in `DialpadClient.js` |
@@ -169,5 +187,6 @@ official Microsoft Learn pages:
 
 Tata Smartflo Click-to-Call API:
 
-- Generate a token (login): https://docs.smartflo.tatatelebusiness.com/reference/generate-a-token
-- Click to Call: https://docs.smartflo.tatatelebusiness.com/reference/v1click_to_call
+- Click to Call Support (used by this app — supports Extension as a destination): https://docs.smartflo.tatatelebusiness.com/reference/v1click_to_call_support
+- Click to Call (mobile/`follow_me_number` only — not used here): https://docs.smartflo.tatatelebusiness.com/reference/v1click_to_call
+- Generate a token (login, used only if other Tata APIs are added later): https://docs.smartflo.tatatelebusiness.com/reference/generate-a-token

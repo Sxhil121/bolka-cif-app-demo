@@ -11,11 +11,12 @@
  *      Microsoft.CIFramework.addHandler. This part talks to genuine
  *      Microsoft APIs, per the official docs (see README.md References).
  *
- *   2. REAL telephony via Tata Smartflo's Click-to-Call API, proxied
- *      through the server route at app/api/click-to-call/route.js (so
- *      Tata credentials never reach the browser). This dials your own
- *      "from" number first, then bridges to the "to" number once you
- *      pick up — see README.md for details.
+ *   2. REAL telephony via Tata Smartflo's Click-to-Call Support API,
+ *      proxied through the server route at app/api/click-to-call/route.js
+ *      (so the Tata API key never reaches the browser). It rings a fixed
+ *      agent extension (baked into the server-side API key) first, then
+ *      bridges to the destination number once someone picks up — see
+ *      README.md for details.
  *
  *      What's still NOT real: writing the resulting call activity back
  *      into Dataverse. That remains a "// TODO: real integration — ..."
@@ -73,7 +74,6 @@ export default function DialpadClient() {
   const [callMeta, setCallMeta] = useState(null);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [loggedCalls, setLoggedCalls] = useState([]);
-  const [fromNumber, setFromNumber] = useState("");
   const [dialValue, setDialValue] = useState("");
   const [disposition, setDisposition] = useState("Connected - Resolved");
   const [notes, setNotes] = useState("");
@@ -230,7 +230,7 @@ export default function DialpadClient() {
   }, []);
 
   // ================================================================
-  // PART 2 — REAL telephony via Tata Smartflo Click-to-Call
+  // PART 2 — REAL telephony via Tata Smartflo Click-to-Call Support
   // ================================================================
 
   async function originateRealCall(eventData) {
@@ -239,20 +239,14 @@ export default function DialpadClient() {
       return;
     }
 
-    const from = fromNumber.trim();
     const to = (eventData.value || "").trim();
-
-    if (!from) {
-      logEvent("error", "Cannot place call — set your agent/from number first");
-      return;
-    }
     if (!to) {
       logEvent("error", "Cannot place call — no destination number");
       return;
     }
 
     const confirmed = window.confirm(
-      `Place a real call from ${from} to ${to} via Tata Smartflo? This dials a real phone and may incur charges.`
+      `Place a real call to ${to} via Tata Smartflo? This rings the configured extension and may incur charges.`
     );
     if (!confirmed) {
       logEvent("system", "Call cancelled before dialing");
@@ -264,7 +258,6 @@ export default function DialpadClient() {
     const meta = {
       id: `call-${Date.now()}-${callSeq}`,
       value: to,
-      fromNumber: from,
       name: eventData.name,
       format: eventData.format,
       entityLogicalName: eventData.entityLogicalName,
@@ -279,16 +272,13 @@ export default function DialpadClient() {
     setCallState(CALL_STATE.RINGING);
     setElapsedSeconds(0);
 
-    logEvent("call", "Originating real call via Tata Smartflo click_to_call", {
-      fromNumber: from,
-      toNumber: to,
-    });
+    logEvent("call", "Originating real call via Tata Smartflo click_to_call_support", { toNumber: to });
 
     try {
       const res = await fetch("/api/click-to-call", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ fromNumber: from, toNumber: to }),
+        body: JSON.stringify({ toNumber: to }),
       });
       const data = await res.json();
 
@@ -453,19 +443,6 @@ export default function DialpadClient() {
           <div>
             <div className={styles.callState}>{idleMessage}</div>
 
-            <label htmlFor="fromInput">Your number (agent/from)</label>
-            <input
-              id="fromInput"
-              type="text"
-              value={fromNumber}
-              onChange={(e) => setFromNumber(e.target.value)}
-              placeholder="e.g. 9198xxxxxxx"
-            />
-            <div className={styles.hint}>
-              Tata rings this number first, then bridges you to the
-              destination once you pick up. Set it once before dialing.
-            </div>
-
             {status === STATUS.STANDALONE && (
               <button className="block" onClick={handleSimulateClick}>
                 Simulate incoming click-to-call (real dial)
@@ -487,8 +464,8 @@ export default function DialpadClient() {
               </button>
             </div>
             <div className={styles.hint}>
-              This places a real call via Tata Smartflo click_to_call — it
-              rings a real phone and may incur charges.
+              This places a real call via Tata Smartflo click_to_call_support
+              — it rings the configured extension and may incur charges.
             </div>
           </div>
         )}
